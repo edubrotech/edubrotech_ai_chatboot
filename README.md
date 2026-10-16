@@ -2,7 +2,7 @@
 
 A production-grade, asynchronous AI Chatbot and Retrieval-Augmented Generation (RAG) microservice built with **FastAPI**, **Qdrant**, **Redis**, and pluggable Multi-LLM provider support (**OpenAI**, **Google Gemini**, and **Local LLMs/Ollama**).
 
-> **📖 Comprehensive Documentation:** Detailed technical specifications, architecture diagrams, sequence flows, and system requirements are located in the [Documentation Suite](../Documents/chatboot/README.md).
+> **📖 Comprehensive Documentation:** Detailed technical specifications, architecture diagrams, sequence flows, and system requirements are located in the [Documentation Suite](README.md).
 
 ---
 

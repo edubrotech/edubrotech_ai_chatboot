@@ -3,6 +3,11 @@ from openai import AsyncOpenAI
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.llm.provider import BaseLLMProvider
+from app.llm.rag_responder import (
+    extract_context_from_prompt,
+    stream_synthesized_response,
+    synthesize_rag_response,
+)
 from app.models.chat import ChatMessage, Role
 
 logger = get_logger(__name__)
@@ -49,10 +54,21 @@ class OpenAIProvider(BaseLLMProvider):
         system_prompt: Optional[str] = None,
         temperature: Optional[float] = None,
     ) -> str:
+        last_user_query = next((m.content for m in reversed(messages) if m.role == Role.USER), "")
+
         if not self._has_valid_api_key():
+            context = extract_context_from_prompt(system_prompt)
+            if context:
+                return synthesize_rag_response(
+                    query=last_user_query,
+                    context=context,
+                    provider_name=self.provider_name,
+                    model_name=self.model,
+                )
             return (
-                f"[OpenAI Provider Simulated Response] Hello! To receive live responses from {self.model}, "
-                "please configure OPENAI_API_KEY in your .env file."
+                f"[OpenAI Provider] Hello! To enable general chat reasoning with {self.model}, "
+                "please configure your OPENAI_API_KEY in the .env file. For knowledge base questions, "
+                "please enable RAG and ensure documents are indexed."
             )
 
         payload = self._prepare_messages(messages, system_prompt)
@@ -68,6 +84,16 @@ class OpenAIProvider(BaseLLMProvider):
             return response.choices[0].message.content or ""
         except Exception as e:
             logger.error("Error generating completion from OpenAI: %s", str(e))
+            # Fallback to context-grounded response on API error
+            context = extract_context_from_prompt(system_prompt)
+            if context:
+                logger.info("OpenAI API call failed (%s), answering from retrieved context", str(e))
+                return synthesize_rag_response(
+                    query=last_user_query,
+                    context=context,
+                    provider_name=f"{self.provider_name} (offline fallback)",
+                    model_name=self.model,
+                )
             raise
 
     async def generate_stream(
@@ -76,13 +102,25 @@ class OpenAIProvider(BaseLLMProvider):
         system_prompt: Optional[str] = None,
         temperature: Optional[float] = None,
     ) -> AsyncGenerator[str, None]:
+        last_user_query = next((m.content for m in reversed(messages) if m.role == Role.USER), "")
+
         if not self._has_valid_api_key():
-            simulated_text = (
-                f"[OpenAI Provider Streaming Simulation] Please set OPENAI_API_KEY in your environment "
-                f"to query {self.model}."
-            )
-            for token in simulated_text.split(" "):
-                yield token + " "
+            context = extract_context_from_prompt(system_prompt)
+            if context:
+                response_text = synthesize_rag_response(
+                    query=last_user_query,
+                    context=context,
+                    provider_name=self.provider_name,
+                    model_name=self.model,
+                )
+            else:
+                response_text = (
+                    f"[OpenAI Provider] Please set OPENAI_API_KEY in your environment to query {self.model} "
+                    f"for general questions, or upload documents to query the RAG knowledge base."
+                )
+
+            async for token in stream_synthesized_response(response_text):
+                yield token
             return
 
         payload = self._prepare_messages(messages, system_prompt)
@@ -102,4 +140,15 @@ class OpenAIProvider(BaseLLMProvider):
                     yield content
         except Exception as e:
             logger.error("Error streaming completion from OpenAI: %s", str(e))
-            raise
+            context = extract_context_from_prompt(system_prompt)
+            if context:
+                response_text = synthesize_rag_response(
+                    query=last_user_query,
+                    context=context,
+                    provider_name=f"{self.provider_name} (offline fallback)",
+                    model_name=self.model,
+                )
+                async for token in stream_synthesized_response(response_text):
+                    yield token
+            else:
+                raise

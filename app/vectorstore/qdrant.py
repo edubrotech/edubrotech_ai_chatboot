@@ -11,14 +11,22 @@ _async_client: Optional[AsyncQdrantClient] = None
 _sync_client: Optional[QdrantClient] = None
 
 
+def is_local_host(host: str) -> bool:
+    cleaned = host.replace("http://", "").replace("https://", "").split(":")[0].strip("/")
+    return cleaned in ["localhost", "127.0.0.1", "0.0.0.0", "::1"]
+
+
 def get_sync_qdrant_client() -> QdrantClient:
     """Return synchronous Qdrant client instance."""
     global _sync_client
     if _sync_client is None:
+        host = settings.QDRANT_HOST.replace("http://", "").replace("https://", "").strip("/")
+        use_https = not is_local_host(host)
         _sync_client = QdrantClient(
-            host=settings.QDRANT_HOST,
+            host=host,
             port=settings.QDRANT_PORT,
             api_key=settings.QDRANT_API_KEY or None,
+            https=use_https,
             prefer_grpc=settings.QDRANT_PREFER_GRPC,
             timeout=5.0,
         )
@@ -29,10 +37,13 @@ def get_async_qdrant_client() -> AsyncQdrantClient:
     """Return asynchronous Qdrant client instance."""
     global _async_client
     if _async_client is None:
+        host = settings.QDRANT_HOST.replace("http://", "").replace("https://", "").strip("/")
+        use_https = not is_local_host(host)
         _async_client = AsyncQdrantClient(
-            host=settings.QDRANT_HOST,
+            host=host,
             port=settings.QDRANT_PORT,
             api_key=settings.QDRANT_API_KEY or None,
+            https=use_https,
             prefer_grpc=settings.QDRANT_PREFER_GRPC,
             timeout=5.0,
         )

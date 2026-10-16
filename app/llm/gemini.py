@@ -4,6 +4,11 @@ import google.generativeai as genai
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.llm.provider import BaseLLMProvider
+from app.llm.rag_responder import (
+    extract_context_from_prompt,
+    stream_synthesized_response,
+    synthesize_rag_response,
+)
 from app.models.chat import ChatMessage, Role
 
 logger = get_logger(__name__)
@@ -38,9 +43,19 @@ class GeminiProvider(BaseLLMProvider):
         system_prompt: Optional[str] = None,
         temperature: Optional[float] = None,
     ) -> str:
+        last_user_query = next((m.content for m in reversed(messages) if m.role == Role.USER), "")
+
         if not self._is_valid_key():
+            context = extract_context_from_prompt(system_prompt)
+            if context:
+                return synthesize_rag_response(
+                    query=last_user_query,
+                    context=context,
+                    provider_name=self.provider_name,
+                    model_name=self.model,
+                )
             return (
-                f"[Gemini Provider Simulated Response] Hello! To receive live responses from {self.model}, "
+                f"[Gemini Provider] Hello! To receive live responses from {self.model}, "
                 "please configure GEMINI_API_KEY in your .env file."
             )
 
@@ -62,6 +77,14 @@ class GeminiProvider(BaseLLMProvider):
             return await asyncio.to_thread(_call_gemini)
         except Exception as e:
             logger.error("Error generating completion from Gemini: %s", str(e))
+            context = extract_context_from_prompt(system_prompt)
+            if context:
+                return synthesize_rag_response(
+                    query=last_user_query,
+                    context=context,
+                    provider_name=f"{self.provider_name} (offline fallback)",
+                    model_name=self.model,
+                )
             raise
 
     async def generate_stream(
@@ -70,13 +93,24 @@ class GeminiProvider(BaseLLMProvider):
         system_prompt: Optional[str] = None,
         temperature: Optional[float] = None,
     ) -> AsyncGenerator[str, None]:
-        if not self.api_key:
-            simulated_text = (
-                f"[Gemini Provider Streaming Simulation] Please set GEMINI_API_KEY in your environment "
-                f"to query {self.model}."
-            )
-            for token in simulated_text.split(" "):
-                yield token + " "
+        last_user_query = next((m.content for m in reversed(messages) if m.role == Role.USER), "")
+
+        if not self._is_valid_key():
+            context = extract_context_from_prompt(system_prompt)
+            if context:
+                response_text = synthesize_rag_response(
+                    query=last_user_query,
+                    context=context,
+                    provider_name=self.provider_name,
+                    model_name=self.model,
+                )
+            else:
+                response_text = (
+                    f"[Gemini Provider] Please set GEMINI_API_KEY in your environment "
+                    f"to query {self.model}."
+                )
+            async for token in stream_synthesized_response(response_text):
+                yield token
             return
 
         def _call_stream():
@@ -99,4 +133,15 @@ class GeminiProvider(BaseLLMProvider):
                     yield chunk.text
         except Exception as e:
             logger.error("Error streaming completion from Gemini: %s", str(e))
-            raise
+            context = extract_context_from_prompt(system_prompt)
+            if context:
+                response_text = synthesize_rag_response(
+                    query=last_user_query,
+                    context=context,
+                    provider_name=f"{self.provider_name} (offline fallback)",
+                    model_name=self.model,
+                )
+                async for token in stream_synthesized_response(response_text):
+                    yield token
+            else:
+                raise

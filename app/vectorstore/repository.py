@@ -12,6 +12,9 @@ from app.vectorstore.qdrant import get_async_qdrant_client, init_qdrant_collecti
 logger = get_logger(__name__)
 settings = get_settings()
 
+# Module-level shared in-memory storage so all repository instances share fallback data
+_global_memory_chunks: Dict[str, DocumentChunk] = {}
+
 
 class VectorRepository:
     """Repository handling vector upsert, search, and document metadata indexing in Qdrant."""
@@ -19,8 +22,6 @@ class VectorRepository:
     def __init__(self, client: Optional[AsyncQdrantClient] = None):
         self.client = client or get_async_qdrant_client()
         self.collection_name = settings.QDRANT_COLLECTION
-        # In-memory fallback storage if Qdrant is offline
-        self._memory_chunks: Dict[str, DocumentChunk] = {}
 
     def _cosine_similarity(self, a: List[float], b: List[float]) -> float:
         """Compute cosine similarity between two float vectors."""
@@ -38,13 +39,16 @@ class VectorRepository:
         if not chunks:
             return 0
 
+        # Always register in shared memory fallback as a safety buffer
+        for chunk in chunks:
+            _global_memory_chunks[chunk.chunk_id] = chunk
+
         try:
             await init_qdrant_collection()
             points = []
             for chunk in chunks:
                 if not chunk.embedding:
                     continue
-                # Generate a stable deterministic UUID from chunk_id for Qdrant point IDs
                 point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, chunk.chunk_id))
                 payload = {
                     "chunk_id": chunk.chunk_id,
@@ -72,9 +76,7 @@ class VectorRepository:
             return len(points)
 
         except Exception as e:
-            logger.warning("Qdrant unavailable (%s), storing %d chunks in memory fallback", str(e), len(chunks))
-            for chunk in chunks:
-                self._memory_chunks[chunk.chunk_id] = chunk
+            logger.warning("Qdrant unavailable (%s), stored %d chunks in memory fallback", str(e), len(chunks))
             return len(chunks)
 
     async def search(
@@ -84,16 +86,29 @@ class VectorRepository:
         score_threshold: float = 0.0,
     ) -> List[SourceDocument]:
         """Perform similarity search for a query embedding vector."""
-        try:
-            search_result = await self.client.search(
-                collection_name=self.collection_name,
-                query_vector=query_vector,
-                limit=top_k,
-                score_threshold=score_threshold if score_threshold > 0 else None,
-            )
+        documents: List[SourceDocument] = []
 
-            documents: List[SourceDocument] = []
-            for point in search_result:
+        try:
+            # Compatibility layer: qdrant-client >= 1.7 uses query_points
+            if hasattr(self.client, "query_points"):
+                response = await self.client.query_points(
+                    collection_name=self.collection_name,
+                    query=query_vector,
+                    limit=top_k,
+                    score_threshold=score_threshold if score_threshold > 0 else None,
+                )
+                points = response.points
+            elif hasattr(self.client, "search"):
+                points = await self.client.search(
+                    collection_name=self.collection_name,
+                    query_vector=query_vector,
+                    limit=top_k,
+                    score_threshold=score_threshold if score_threshold > 0 else None,
+                )
+            else:
+                raise AttributeError("AsyncQdrantClient has neither query_points nor search method")
+
+            for point in points:
                 payload = point.payload or {}
                 documents.append(
                     SourceDocument(
@@ -104,27 +119,30 @@ class VectorRepository:
                         metadata=payload.get("metadata", {}),
                     )
                 )
-            return documents
+
+            if documents:
+                return documents
 
         except Exception as e:
             logger.warning("Qdrant search failed (%s), searching memory fallback", str(e))
-            # Fallback search across in-memory chunks
-            scored: List[SourceDocument] = []
-            for chunk in self._memory_chunks.values():
-                if chunk.embedding:
-                    score = self._cosine_similarity(query_vector, chunk.embedding)
-                    if score >= score_threshold:
-                        scored.append(
-                            SourceDocument(
-                                document_id=chunk.document_id,
-                                chunk_id=chunk.chunk_id,
-                                content=chunk.content,
-                                score=score,
-                                metadata=chunk.metadata,
-                            )
+
+        # Memory Fallback search
+        scored: List[SourceDocument] = []
+        for chunk in _global_memory_chunks.values():
+            if chunk.embedding:
+                score = self._cosine_similarity(query_vector, chunk.embedding)
+                if score >= score_threshold:
+                    scored.append(
+                        SourceDocument(
+                            document_id=chunk.document_id,
+                            chunk_id=chunk.chunk_id,
+                            content=chunk.content,
+                            score=score,
+                            metadata=chunk.metadata,
                         )
-            scored.sort(key=lambda x: x.score, reverse=True)
-            return scored[:top_k]
+                    )
+        scored.sort(key=lambda x: x.score, reverse=True)
+        return scored[:top_k]
 
     async def delete_document(self, document_id: str) -> int:
         """Delete all chunks belonging to a document_id."""
@@ -147,10 +165,10 @@ class VectorRepository:
         except Exception as e:
             logger.warning("Qdrant delete error (%s), cleaning fallback memory", str(e))
 
-        # Also purge from memory fallback
-        to_del = [k for k, v in self._memory_chunks.items() if v.document_id == document_id]
+        # Also purge from global memory fallback
+        to_del = [k for k, v in _global_memory_chunks.items() if v.document_id == document_id]
         for k in to_del:
-            del self._memory_chunks[k]
+            del _global_memory_chunks[k]
         deleted_count = max(deleted_count, len(to_del))
 
         return deleted_count
@@ -160,7 +178,7 @@ class VectorRepository:
         docs_map: Dict[str, Dict[str, Any]] = {}
 
         try:
-            # Scroll points to collect document IDs and counts
+            # Scroll points from Qdrant
             scroll_result, _ = await self.client.scroll(
                 collection_name=self.collection_name,
                 limit=1000,
@@ -184,8 +202,8 @@ class VectorRepository:
         except Exception as e:
             logger.debug("Qdrant scroll unavailable (%s), inspecting memory fallback", str(e))
 
-        # Combine with memory fallback
-        for chunk in self._memory_chunks.values():
+        # Merge with in-memory fallback
+        for chunk in _global_memory_chunks.values():
             doc_id = chunk.document_id
             if doc_id not in docs_map:
                 docs_map[doc_id] = {
@@ -210,7 +228,7 @@ class VectorRepository:
 
     async def reset_collection(self) -> bool:
         """Drop and re-create the collection."""
-        self._memory_chunks.clear()
+        _global_memory_chunks.clear()
         try:
             await self.client.delete_collection(self.collection_name)
             await init_qdrant_collection()

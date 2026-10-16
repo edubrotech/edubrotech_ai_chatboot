@@ -32,16 +32,16 @@ class Settings(BaseSettings):
     OPENAI_TEMPERATURE: float = 0.7
     OPENAI_MAX_TOKENS: int = 1024
 
-    # Gemini
+    # Google Gemini Settings
     GEMINI_API_KEY: Optional[str] = None
-    GEMINI_MODEL: str = "gemini-1.5-flash"
+    GEMINI_MODEL: str = "models/gemini-2.5-flash"
 
-    # Local LLM
+    # Local / Self-hosted LLM
     LOCAL_LLM_URL: str = "http://localhost:11434/v1"
     LOCAL_LLM_MODEL: str = "llama3"
 
-    # Embeddings
-    EMBEDDING_PROVIDER: str = "openai"  # "openai", "gemini", "local"
+    # Embeddings Configuration
+    EMBEDDING_PROVIDER: str = "openai"
     EMBEDDING_MODEL: str = "text-embedding-3-small"
     EMBEDDING_DIMENSION: int = 1536
 
@@ -65,7 +65,7 @@ class Settings(BaseSettings):
     RAG_CHUNK_SIZE: int = 500
     RAG_CHUNK_OVERLAP: int = 50
     RAG_TOP_K: int = 4
-    RAG_SCORE_THRESHOLD: float = 0.5
+    RAG_SCORE_THRESHOLD: float = 0.0
 
 
 @lru_cache()

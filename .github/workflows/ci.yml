@@ -1,0 +1,109 @@
+name: AI Chatbot CI
+
+on:
+  push:
+    branches: [main, staging, develop]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  pull_request:
+    branches: [main, staging, develop]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Run Unit & Integration Tests
+    runs-on: ubuntu-latest
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      qdrant:
+        image: qdrant/qdrant:v1.8.2
+        ports:
+          - 6333:6333
+          - 6334:6334
+
+    env:
+      ENVIRONMENT: testing
+      DEFAULT_LLM_PROVIDER: local
+      EMBEDDING_PROVIDER: local
+      QDRANT_HOST: localhost
+      QDRANT_PORT: 6333
+      REDIS_HOST: localhost
+      REDIS_PORT: 6379
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Syntax & Lint Verification
+        run: |
+          python -m compileall app scripts tests
+
+      - name: Run Test Suite
+        run: |
+          pytest tests/ -v --tb=short
+
+      - name: Test Batch Ingestion Script
+        run: |
+          python scripts/ingest.py --path ./data
+
+      - name: Test Reindexing Script
+        run: |
+          python scripts/reindex.py --path ./data
+
+  docker-build-test:
+    name: Build & Verify Docker Image
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and Start Compose Stack
+        run: |
+          cp .env.example .env
+          docker compose up -d --build
+
+      - name: Wait for Stack Readiness
+        run: |
+          echo "Waiting for services to become healthy..."
+          timeout 60 bash -c 'until curl -sf http://localhost:8000/live; do sleep 3; done'
+          timeout 60 bash -c 'until curl -sf http://localhost:8000/health; do sleep 3; done'
+
+      - name: Verify Health Check Output
+        run: |
+          curl -s http://localhost:8000/health | grep -q '"status"'
+          echo "Stack health check passed successfully!"
+
+      - name: Tear Down Stack
+        if: always()
+        run: |
+          docker compose down -v

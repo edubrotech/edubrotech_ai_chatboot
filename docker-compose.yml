@@ -1,0 +1,112 @@
+version: "3.9"
+
+# ==============================================================================
+# RentCrew AI Chatbot Microservice Stack
+#
+# Services included in this Compose file:
+# 1. chatbot:  FastAPI Application (RAG orchestration, Multi-LLM provider, SSE streaming)
+# 2. qdrant:   Vector Database (stores dense embeddings & similarity search)
+# 3. redis:    In-Memory Key-Value Store (sliding-window conversational memory & TTL)
+# ==============================================================================
+
+services:
+  # ----------------------------------------------------------------------------
+  # 1. AI Chatbot API Service (FastAPI)
+  # ----------------------------------------------------------------------------
+  chatbot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rentcrew-ai-chatbot
+    restart: unless-stopped
+    ports:
+      # Host:Container port mapping
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=production
+      - DEBUG=false
+      - HOST=0.0.0.0
+      - PORT=8000
+      # Vector DB connection targeting the internal Docker service name 'qdrant'
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      # Cache connection targeting the internal Docker service name 'redis'
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      # LLM Provider settings
+      - DEFAULT_LLM_PROVIDER=${DEFAULT_LLM_PROVIDER:-openai}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+    depends_on:
+      qdrant:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/live"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - chatbot-network
+
+  # ----------------------------------------------------------------------------
+  # 2. Qdrant Vector Database
+  # ----------------------------------------------------------------------------
+  qdrant:
+    image: qdrant/qdrant:v1.8.2
+    container_name: rentcrew-qdrant
+    restart: unless-stopped
+    ports:
+      # 6333: HTTP REST API & Web Dashboard UI (http://localhost:6333/dashboard)
+      - "6333:6333"
+      # 6334: High-performance gRPC endpoint for low-latency batch vector search
+      - "6334:6334"
+    volumes:
+      # Persistent storage volume for collections, payloads, and HNSW vector indices
+      - qdrant_storage:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+    networks:
+      - chatbot-network
+
+  # ----------------------------------------------------------------------------
+  # 3. Redis In-Memory Memory & Cache
+  # ----------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: rentcrew-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      # 6379: Redis standard client connection port
+      - "6379:6379"
+    volumes:
+      # Persistent storage volume for Redis AOF (Append-Only File)
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - chatbot-network
+
+# ==============================================================================
+# Persistent Named Volumes
+# ==============================================================================
+volumes:
+  # Stores Qdrant vectors and metadata independently of container lifecycle
+  qdrant_storage:
+    driver: local
+  # Stores Redis appendonly log ensuring session memory durability across restarts
+  redis_data:
+    driver: local
+
+# ==============================================================================
+# Isolated Bridge Network
+# ==============================================================================
+networks:
+  chatbot-network:
+    driver: bridge

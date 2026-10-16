@@ -61,7 +61,7 @@ The application is orchestrated via Docker Compose into three decoupled, high-pe
 - **Dependencies**: Waits for `redis` to become healthy and `qdrant` to start before launching.
 
 ### 2. `qdrant` (Vector Database Engine)
-- **Container Name**: `rentcrew-qdrant`
+- **Container Name**: `edubrotech-qdrant`
 - **Image**: `qdrant/qdrant:v1.8.2`
 - **Exposed Ports**:
   - `6333:6333` - REST API & Web Dashboard ([http://localhost:6333/dashboard](http://localhost:6333/dashboard)).

@@ -49,7 +49,7 @@ The application is orchestrated via Docker Compose into three decoupled, high-pe
 ```
 
 ### 1. `chatbot` (FastAPI Core Engine)
-- **Container Name**: `rentcrew-ai-chatbot`
+- **Container Name**: `edubrotech-ai-chatbot`
 - **Build / Base**: Built from `./Dockerfile` using Python 3.11-slim multi-stage build running under non-root `appuser`.
 - **Exposed Port**: `8000:8000` (HTTP API and Server-Sent Events).
 - **Core Functionality**:
@@ -73,7 +73,7 @@ The application is orchestrated via Docker Compose into three decoupled, high-pe
 - **Persistence**: Mounted to named volume `qdrant_storage:/qdrant/storage` to preserve indexed collections across container rebuilds.
 
 ### 3. `redis` (Conversational Memory & State Store)
-- **Container Name**: `rentcrew-redis`
+- **Container Name**: `edubrotech-redis`
 - **Image**: `redis:7-alpine`
 - **Exposed Port**: `6379:6379`
 - **Core Functionality**:
@@ -173,7 +173,7 @@ ai-chatbot/
 │
 ├── data/                           # Seed documents and sample knowledge files
 │   ├── faq.json
-│   └── rentcrew_overview.md
+│   └── overview.md
 │
 ├── docker-compose.yml              # Multi-container orchestration (App + Qdrant + Redis)
 ├── Dockerfile                      # Multi-stage container build
